@@ -158,3 +158,40 @@ Preferred communication style: Simple, everyday language.
 - Drizzle Kit for schema migrations
 - Migration files stored in `/migrations` directory
 - Push command available for quick schema updates
+
+## Recent Changes & Work in Progress
+
+### October 16, 2025 - PDF Upload Feature with AWS S3 (IN PROGRESS)
+
+**Status:** ⏸️ Paused - Awaiting AWS credentials from user
+
+**What We're Building:**
+- PDF upload functionality to replace "Share Notes" quick action
+- AWS S3 integration for secure file storage
+- Public shareable links for all uploaded PDFs (no authentication required)
+- Metadata tracking in database for uploaded files
+
+**Implementation Plan:**
+1. ✅ Requested AWS credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, S3_BUCKET_NAME)
+2. ⏳ Install AWS SDK v3 packages (@aws-sdk/client-s3, @aws-sdk/lib-storage) and multer
+3. ⏳ Create uploaded_files database table (id, userId, filename, s3Key, publicUrl, shareToken, uploadedAt)
+4. ⏳ Update storage interface for uploaded files CRUD operations
+5. ⏳ Build S3 upload service module
+6. ⏳ Create /api/upload-pdf endpoint with Multer
+7. ⏳ Create /api/public/files/:shareToken endpoint for public access
+8. ⏳ Update student dashboard - replace Share Notes card with PDF Upload
+9. ⏳ Build PDF upload modal component
+10. ⏳ Test complete flow
+
+**Technical Approach:**
+- Using AWS SDK v3 (latest version, modular)
+- Multer middleware for handling multipart/form-data file uploads
+- Stream uploads for memory efficiency
+- Public URLs generated automatically with unique share tokens
+- No authentication required for viewing shared PDFs
+
+**Bugs Fixed Today:**
+- ✅ AI Assistant modal - Fixed response parsing so "Apply Changes" button displays correctly
+- ✅ Quick Actions buttons - Fixed navigation errors (was using invalid note ID "-1")
+- ✅ Citation generation - Fixed parameter mismatch (input→inputText, style→citationStyle)
+- ✅ All AI features now fully working (improve text, summarize, grammar check, citations)
