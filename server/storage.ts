@@ -3,6 +3,7 @@ import {
   notes,
   citations,
   submissions,
+  pdfNotes,
   type User,
   type UpsertUser,
   type Note,
@@ -11,9 +12,11 @@ import {
   type InsertCitation,
   type Submission,
   type InsertSubmission,
+  type PdfNote,
+  type InsertPdfNote,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, desc, or } from "drizzle-orm";
+import { eq, and, desc, or, sql } from "drizzle-orm";
 import { randomUUID } from "crypto";
 
 export interface IStorage {
@@ -39,6 +42,15 @@ export interface IStorage {
   getSubmissionById(id: string): Promise<(Submission & { student: User; faculty: User | null }) | undefined>;
   createSubmission(submission: InsertSubmission): Promise<Submission>;
   updateSubmission(id: string, submission: Partial<InsertSubmission>): Promise<Submission>;
+  
+  // PDF Notes operations
+  getPdfNotesByUserId(userId: string): Promise<PdfNote[]>;
+  getPdfNoteById(id: string): Promise<PdfNote | undefined>;
+  getPdfNoteByShareToken(token: string): Promise<PdfNote | undefined>;
+  createPdfNote(pdfNote: InsertPdfNote): Promise<PdfNote>;
+  updatePdfNote(id: string, pdfNote: Partial<InsertPdfNote>): Promise<PdfNote>;
+  deletePdfNote(id: string): Promise<void>;
+  incrementDownloadCount(id: string): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -160,6 +172,49 @@ export class DatabaseStorage implements IStorage {
       .where(eq(submissions.id, id))
       .returning();
     return submission;
+  }
+
+  // PDF Notes operations
+  async getPdfNotesByUserId(userId: string): Promise<PdfNote[]> {
+    return await db.select().from(pdfNotes).where(eq(pdfNotes.userId, userId)).orderBy(desc(pdfNotes.updatedAt));
+  }
+
+  async getPdfNoteById(id: string): Promise<PdfNote | undefined> {
+    const [pdfNote] = await db.select().from(pdfNotes).where(eq(pdfNotes.id, id));
+    return pdfNote;
+  }
+
+  async getPdfNoteByShareToken(token: string): Promise<PdfNote | undefined> {
+    const [pdfNote] = await db.select().from(pdfNotes).where(
+      and(eq(pdfNotes.shareToken, token), eq(pdfNotes.isPublic, true))
+    );
+    return pdfNote;
+  }
+
+  async createPdfNote(pdfNoteData: InsertPdfNote): Promise<PdfNote> {
+    const [pdfNote] = await db.insert(pdfNotes).values(pdfNoteData).returning();
+    return pdfNote;
+  }
+
+  async updatePdfNote(id: string, pdfNoteData: Partial<InsertPdfNote>): Promise<PdfNote> {
+    const [pdfNote] = await db
+      .update(pdfNotes)
+      .set({ ...pdfNoteData, updatedAt: new Date() })
+      .where(eq(pdfNotes.id, id))
+      .returning();
+    return pdfNote;
+  }
+
+  async deletePdfNote(id: string): Promise<void> {
+    await db.delete(pdfNotes).where(eq(pdfNotes.id, id));
+  }
+
+  async incrementDownloadCount(id: string): Promise<void> {
+    await db.execute(sql`
+      UPDATE pdf_notes 
+      SET download_count = download_count + 1 
+      WHERE id = ${id}
+    `);
   }
 }
 

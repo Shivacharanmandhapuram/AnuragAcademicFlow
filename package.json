@@ -11,6 +11,9 @@
     "db:push": "drizzle-kit push"
   },
   "dependencies": {
+    "@aws-sdk/client-cognito-identity-provider": "^3.911.0",
+    "@aws-sdk/client-s3": "^3.911.0",
+    "@aws-sdk/s3-request-presigner": "^3.911.0",
     "@clerk/clerk-react": "^5.52.0",
     "@clerk/express": "^1.7.38",
     "@codemirror/lang-cpp": "^6.0.3",

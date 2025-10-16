@@ -11,21 +11,20 @@ import {
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
-// Users table - Stores Clerk user data with AcademicFlow role extension
+// Users table - Stores AWS Cognito user data
 export const users = pgTable("users", {
   id: varchar("id").primaryKey(),
-  email: varchar("email").unique(),
+  cognitoSub: varchar("cognito_sub").unique().notNull(),
+  email: varchar("email").unique().notNull(),
   firstName: varchar("first_name"),
   lastName: varchar("last_name"),
-  profileImageUrl: varchar("profile_image_url"),
-  role: varchar("role", { enum: ["student", "faculty"] }), // Nullable - set via role selection after first login
-  department: varchar("department"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
 export const usersRelations = relations(users, ({ many }) => ({
   notes: many(notes),
+  pdfNotes: many(pdfNotes),
   submissionsAsStudent: many(submissions, { relationName: "studentSubmissions" }),
   submissionsAsFaculty: many(submissions, { relationName: "facultySubmissions" }),
 }));
@@ -126,3 +125,37 @@ export const insertSubmissionSchema = createInsertSchema(submissions).omit({
 
 export type InsertSubmission = z.infer<typeof insertSubmissionSchema>;
 export type Submission = typeof submissions.$inferSelect;
+
+// PDF Notes table - Stores uploaded PDF files metadata
+export const pdfNotes = pgTable("pdf_notes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  title: varchar("title", { length: 500 }).notNull(),
+  description: text("description"),
+  s3Key: varchar("s3_key", { length: 1000 }).notNull(),
+  fileName: varchar("file_name", { length: 500 }).notNull(),
+  fileSize: integer("file_size").notNull(),
+  mimeType: varchar("mime_type", { length: 100 }).notNull().default("application/pdf"),
+  isPublic: boolean("is_public").notNull().default(false),
+  shareToken: varchar("share_token").unique(),
+  downloadCount: integer("download_count").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const pdfNotesRelations = relations(pdfNotes, ({ one }) => ({
+  user: one(users, {
+    fields: [pdfNotes.userId],
+    references: [users.id],
+  }),
+}));
+
+export const insertPdfNoteSchema = createInsertSchema(pdfNotes).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  downloadCount: true,
+});
+
+export type InsertPdfNote = z.infer<typeof insertPdfNoteSchema>;
+export type PdfNote = typeof pdfNotes.$inferSelect;
