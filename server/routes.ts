@@ -1,11 +1,12 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertNoteSchema, insertCitationSchema, insertSubmissionSchema } from "@shared/schema";
+import { insertNoteSchema, insertCitationSchema, insertSubmissionSchema, insertPdfNoteSchema } from "@shared/schema";
 import { randomUUID } from "crypto";
 import bcrypt from "bcrypt";
 import { z } from "zod";
 import OpenAI from "openai";
+import { generateUploadUrl, generateDownloadUrl, deleteFile } from "./s3";
 
 const openai = process.env.OPENAI_API_KEY 
   ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
@@ -620,6 +621,207 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error updating submission:", error);
       res.status(500).json({ message: "Failed to update submission" });
+    }
+  });
+
+  // PDF Notes routes
+  app.get("/api/pdfs", async (req, res) => {
+    try {
+      const userId = req.session?.userId;
+      if (!userId) {
+        return res.status(401).json({ message: "Unauthorized" });
+      }
+      const pdfs = await storage.getPdfNotesByUserId(userId);
+      res.json(pdfs);
+    } catch (error) {
+      console.error("Error fetching PDFs:", error);
+      res.status(500).json({ message: "Failed to fetch PDFs" });
+    }
+  });
+
+  app.get("/api/pdfs/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const userId = req.session?.userId;
+      if (!userId) {
+        return res.status(401).json({ message: "Unauthorized" });
+      }
+      
+      const pdf = await storage.getPdfNoteById(id);
+      if (!pdf) {
+        return res.status(404).json({ message: "PDF not found" });
+      }
+
+      if (pdf.userId !== userId) {
+        return res.status(403).json({ message: "Forbidden" });
+      }
+
+      res.json(pdf);
+    } catch (error) {
+      console.error("Error fetching PDF:", error);
+      res.status(500).json({ message: "Failed to fetch PDF" });
+    }
+  });
+
+  app.get("/api/pdfs/shared/:token", async (req, res) => {
+    try {
+      const { token } = req.params;
+      const pdf = await storage.getPdfNoteByShareToken(token);
+      
+      if (!pdf) {
+        return res.status(404).json({ message: "PDF not found or not public" });
+      }
+
+      res.json(pdf);
+    } catch (error) {
+      console.error("Error fetching shared PDF:", error);
+      res.status(500).json({ message: "Failed to fetch shared PDF" });
+    }
+  });
+
+  app.post("/api/pdfs/presign-upload", async (req, res) => {
+    try {
+      const userId = req.session?.userId;
+      if (!userId) {
+        return res.status(401).json({ message: "Unauthorized" });
+      }
+
+      const { fileName } = req.body;
+      if (!fileName) {
+        return res.status(400).json({ message: "File name is required" });
+      }
+
+      const { url, key } = await generateUploadUrl(userId, fileName);
+      res.json({ uploadUrl: url, s3Key: key });
+    } catch (error) {
+      console.error("Error generating upload URL:", error);
+      res.status(500).json({ message: "Failed to generate upload URL" });
+    }
+  });
+
+  app.post("/api/pdfs", async (req, res) => {
+    try {
+      const userId = req.session?.userId;
+      if (!userId) {
+        return res.status(401).json({ message: "Unauthorized" });
+      }
+
+      const pdfData = insertPdfNoteSchema.parse({ ...req.body, userId });
+      const pdf = await storage.createPdfNote(pdfData);
+      res.json(pdf);
+    } catch (error) {
+      console.error("Error creating PDF:", error);
+      res.status(500).json({ message: "Failed to create PDF" });
+    }
+  });
+
+  app.post("/api/pdfs/:id/share", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const userId = req.session?.userId;
+      if (!userId) {
+        return res.status(401).json({ message: "Unauthorized" });
+      }
+      const { isPublic } = req.body;
+      
+      const pdf = await storage.getPdfNoteById(id);
+      if (!pdf) {
+        return res.status(404).json({ message: "PDF not found" });
+      }
+
+      if (pdf.userId !== userId) {
+        return res.status(403).json({ message: "Forbidden" });
+      }
+
+      const shareToken = pdf.shareToken || randomUUID();
+      await storage.updatePdfNote(id, {
+        isPublic,
+        shareToken,
+      });
+
+      const shareUrl = isPublic ? `${req.protocol}://${req.get('host')}/shared/${shareToken}` : null;
+      res.json({ shareUrl, shareToken });
+    } catch (error) {
+      console.error("Error sharing PDF:", error);
+      res.status(500).json({ message: "Failed to share PDF" });
+    }
+  });
+
+  app.get("/api/pdfs/:id/download", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const userId = req.session?.userId;
+      
+      const pdf = await storage.getPdfNoteById(id);
+      if (!pdf) {
+        return res.status(404).json({ message: "PDF not found" });
+      }
+
+      // Check access: owner or public
+      if (pdf.userId !== userId && !pdf.isPublic) {
+        return res.status(403).json({ message: "Forbidden" });
+      }
+
+      const downloadUrl = await generateDownloadUrl(pdf.s3Key);
+      
+      // Increment download count
+      await storage.incrementDownloadCount(id);
+      
+      res.json({ downloadUrl });
+    } catch (error) {
+      console.error("Error generating download URL:", error);
+      res.status(500).json({ message: "Failed to generate download URL" });
+    }
+  });
+
+  app.get("/api/pdfs/shared/:token/download", async (req, res) => {
+    try {
+      const { token } = req.params;
+      
+      const pdf = await storage.getPdfNoteByShareToken(token);
+      if (!pdf) {
+        return res.status(404).json({ message: "PDF not found or not public" });
+      }
+
+      const downloadUrl = await generateDownloadUrl(pdf.s3Key);
+      
+      // Increment download count
+      await storage.incrementDownloadCount(pdf.id);
+      
+      res.json({ downloadUrl });
+    } catch (error) {
+      console.error("Error generating download URL:", error);
+      res.status(500).json({ message: "Failed to generate download URL" });
+    }
+  });
+
+  app.delete("/api/pdfs/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const userId = req.session?.userId;
+      if (!userId) {
+        return res.status(401).json({ message: "Unauthorized" });
+      }
+      
+      const pdf = await storage.getPdfNoteById(id);
+      if (!pdf) {
+        return res.status(404).json({ message: "PDF not found" });
+      }
+
+      if (pdf.userId !== userId) {
+        return res.status(403).json({ message: "Forbidden" });
+      }
+
+      // Delete from S3
+      await deleteFile(pdf.s3Key);
+      
+      // Delete from database
+      await storage.deletePdfNote(id);
+      
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting PDF:", error);
+      res.status(500).json({ message: "Failed to delete PDF" });
     }
   });
 
