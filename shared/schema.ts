@@ -11,11 +11,11 @@ import {
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
-// Users table - Stores AWS Cognito user data
+// Users table - Simple email/password authentication
 export const users = pgTable("users", {
-  id: varchar("id").primaryKey(),
-  cognitoSub: varchar("cognito_sub").unique().notNull(),
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   email: varchar("email").unique().notNull(),
+  passwordHash: varchar("password_hash", { length: 255 }).notNull(),
   firstName: varchar("first_name"),
   lastName: varchar("last_name"),
   createdAt: timestamp("created_at").defaultNow(),

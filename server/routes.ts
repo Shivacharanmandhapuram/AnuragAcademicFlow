@@ -3,38 +3,92 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { insertNoteSchema, insertCitationSchema, insertSubmissionSchema } from "@shared/schema";
 import { randomUUID } from "crypto";
+import bcrypt from "bcrypt";
+import { z } from "zod";
 import OpenAI from "openai";
 
 const openai = process.env.OPENAI_API_KEY 
   ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
   : null;
 
+const registerSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(6),
+  firstName: z.string().optional(),
+  lastName: z.string().optional(),
+});
+
+const loginSchema = z.object({
+  email: z.string().email(),
+  password: z.string(),
+});
+
 export async function registerRoutes(app: Express): Promise<Server> {
-  // Auth routes - simplified without Clerk
-  app.post("/api/auth/set-name", async (req, res) => {
+  // Auth routes - Email/Password Authentication
+  app.post("/api/auth/register", async (req, res) => {
     try {
-      const { name } = req.body;
+      const { email, password, firstName, lastName } = registerSchema.parse(req.body);
       
-      if (!name || name.trim().length === 0) {
-        return res.status(400).json({ message: "Name is required" });
+      // Check if user already exists
+      const existingUsers = await storage.getUserByEmail(email);
+      if (existingUsers) {
+        return res.status(400).json({ message: "Email already registered" });
       }
 
-      // Create or get user by name
+      // Hash password
+      const passwordHash = await bcrypt.hash(password, 10);
+
+      // Create user
       const userId = randomUUID();
       const user = await storage.upsertUser({
         id: userId,
-        email: null,
-        firstName: name,
-        lastName: null,
-        profileImageUrl: null,
-        role: null,
+        email,
+        passwordHash,
+        firstName: firstName || null,
+        lastName: lastName || null,
       });
 
       req.session.userId = user.id;
-      res.json(user);
+      
+      // Don't send password hash to client
+      const { passwordHash: _, ...userWithoutPassword } = user;
+      res.json(userWithoutPassword);
     } catch (error) {
-      console.error("Error setting name:", error);
-      res.status(500).json({ message: "Failed to set name" });
+      console.error("Error registering:", error);
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Invalid input", errors: error.errors });
+      }
+      res.status(500).json({ message: "Failed to register" });
+    }
+  });
+
+  app.post("/api/auth/login", async (req, res) => {
+    try {
+      const { email, password } = loginSchema.parse(req.body);
+      
+      // Find user by email
+      const user = await storage.getUserByEmail(email);
+      if (!user) {
+        return res.status(401).json({ message: "Invalid email or password" });
+      }
+
+      // Verify password
+      const isValid = await bcrypt.compare(password, user.passwordHash);
+      if (!isValid) {
+        return res.status(401).json({ message: "Invalid email or password" });
+      }
+
+      req.session.userId = user.id;
+      
+      // Don't send password hash to client
+      const { passwordHash: _, ...userWithoutPassword } = user;
+      res.json(userWithoutPassword);
+    } catch (error) {
+      console.error("Error logging in:", error);
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Invalid input", errors: error.errors });
+      }
+      res.status(500).json({ message: "Failed to login" });
     }
   });
 
@@ -73,36 +127,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Role selection endpoint
-  app.post("/api/auth/select-role", async (req, res) => {
-    try {
-      const userId = req.session?.userId;
-      if (!userId) {
-        return res.status(401).json({ message: "Unauthorized" });
-      }
-      
-      const { role } = req.body;
-      
-      if (!role || !["student", "faculty"].includes(role)) {
-        return res.status(400).json({ message: "Invalid role" });
-      }
-
-      const user = await storage.getUser(userId);
-      if (!user) {
-        return res.status(404).json({ message: "User not found" });
-      }
-
-      const updatedUser = await storage.upsertUser({
-        ...user,
-        role,
-      });
-
-      res.json(updatedUser);
-    } catch (error) {
-      console.error("Error selecting role:", error);
-      res.status(500).json({ message: "Failed to select role" });
-    }
-  });
 
   // Notes routes
   app.get("/api/notes", async (req, res) => {
@@ -429,17 +453,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Faculty-only routes
-  app.post("/api/faculty/detect-ai", async (req, res) => {
+  // AI Detection routes
+  app.post("/api/ai/detect-ai", async (req, res) => {
     try {
       const userId = req.session?.userId;
       if (!userId) {
         return res.status(401).json({ message: "Unauthorized" });
-      }
-      const user = await storage.getUser(userId);
-      
-      if (user?.role !== "faculty") {
-        return res.status(403).json({ message: "Faculty access required" });
       }
 
       const { content } = req.body;
@@ -472,16 +491,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/faculty/verify-citations", async (req, res) => {
+  app.post("/api/ai/verify-citations", async (req, res) => {
     try {
       const userId = req.session?.userId;
       if (!userId) {
         return res.status(401).json({ message: "Unauthorized" });
-      }
-      const user = await storage.getUser(userId);
-      
-      if (user?.role !== "faculty") {
-        return res.status(403).json({ message: "Faculty access required" });
       }
 
       const { content, style } = req.body;
@@ -527,13 +541,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ message: "User not found" });
       }
 
-      let submissions;
-      if (user.role === "faculty") {
-        submissions = await storage.getSubmissionsByFacultyId(userId);
-      } else {
-        submissions = await storage.getSubmissionsByStudentId(userId);
-      }
-
+      // Get submissions for student
+      const submissions = await storage.getSubmissionsByStudentId(userId);
       res.json(submissions);
     } catch (error) {
       console.error("Error fetching submissions:", error);
@@ -592,15 +601,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!userId) {
         return res.status(401).json({ message: "Unauthorized" });
       }
-      const user = await storage.getUser(userId);
       
       const submission = await storage.getSubmissionById(id);
       if (!submission) {
         return res.status(404).json({ message: "Submission not found" });
       }
 
-      // Only faculty can update submissions (for grading)
-      if (user?.role !== "faculty" || submission.facultyId !== userId) {
+      // Only assigned faculty can update submissions (for grading)
+      if (submission.facultyId !== userId) {
         return res.status(403).json({ message: "Forbidden" });
       }
 
